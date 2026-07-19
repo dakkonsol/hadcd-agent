@@ -39,8 +39,13 @@ The agent does **not**:
 
 Every credential the agent uses is supplied by the host in `config.env`
 (see [`agent/config.env.example`](agent/config.env.example) for the fully
-annotated reference). Nothing is phoned home beyond the dispatcher API
-calls implemented in this repository.
+annotated reference). Beyond the dispatcher API calls implemented in this
+repository, the only outbound traffic the agent originates on its own is
+to two well-known public endpoints: `api.ipify.org` (to learn the node's
+public IP for the dashboard) and `api.open-meteo.com` (weather, for the
+Vast.ai listing windows). Optional integrations you configure — a
+thermostat/BMS, Vast.ai, mining pools — reach their own services as
+documented.
 
 The [`hadcd_workloads/`](hadcd_workloads/) package contains the complete
 implementations of everything the agent can be asked to run — the
