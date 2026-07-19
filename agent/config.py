@@ -79,6 +79,22 @@ class AgentSettings(BaseSettings):
     # simultaneous burns.
     agent_concurrency: int = 1
 
+    # --- Container task security floor -------------------------------
+    # Extra host-path prefixes that dispatched container tasks may
+    # bind-mount, os.pathsep-separated (';' on Windows, ':' on Linux).
+    # The agent's own blob-staging temp dirs are always mountable; every
+    # other payload-supplied host path is rejected unless it sits under
+    # one of these prefixes. This is deliberately a *local* setting —
+    # the dispatcher can never widen it. Leave empty (default) unless
+    # this node runs trusted operator tasks that mount host data dirs.
+    container_mount_allowlist: str = ""
+    # When true, every container task on this node runs with the full
+    # hardened floor (cap_drop=ALL, no-new-privileges, unprivileged,
+    # isolated bridge network) even if the dispatcher marked it as a
+    # trusted operator task. Recommended for independent/BYO hosts that
+    # do not operate their own dispatcher.
+    container_require_hardened: bool = False
+
     # --- Loop cadences (real seconds; the backend's thresholds use the
     # same scale, so do not compress here) ---------------------------
     heartbeat_interval_sec: float = 10.0

@@ -337,7 +337,14 @@ def _build_handler(networks: list[dict], result_holder: list, done: threading.Ev
                 self.send_response(404)
                 self.end_headers()
                 return
-            length = int(self.headers.get("Content-Length", 0))
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except (TypeError, ValueError):
+                self._send(400, error_page_tmpl.format(reason="Bad request."))
+                return
+            if length < 0 or length > 16 * 1024:
+                self._send(400, error_page_tmpl.format(reason="Request too large."))
+                return
             raw = self.rfile.read(length).decode("utf-8", errors="replace")
             params = urllib.parse.parse_qs(raw)
             ssid = params.get("ssid", [""])[0].strip()
@@ -345,6 +352,15 @@ def _build_handler(networks: list[dict], result_holder: list, done: threading.Ev
 
             if not ssid:
                 self._send(400, error_page_tmpl.format(reason="No SSID provided."))
+                return
+            # The SSID/password become nmcli argv entries. Argument lists
+            # rule out shell injection, but a value starting with "-" would
+            # be parsed as an nmcli option, and control characters have no
+            # business in either field.
+            if ssid.startswith("-") or any(ord(c) < 32 for c in ssid + password):
+                self._send(400, error_page_tmpl.format(
+                    reason="SSID or password contains unsupported characters."
+                ))
                 return
 
             logger.info("Provisioning request: SSID=%r", ssid)

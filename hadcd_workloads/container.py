@@ -26,6 +26,8 @@ policy / threat-model framing of socket access.
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 import time
 
 from hadcd_workloads.registry import register
@@ -46,6 +48,59 @@ MAX_TIMEOUT_SEC = 86400.0
 # capture a meaningful traceback or summary without blowing up
 # the task result row in the ledger.
 MAX_LOG_BYTES = 1 * 1024 * 1024
+
+
+# Prefix of the agent's blob-staging temp dirs (see Agent._run_assignment).
+# Bind-mounts under <tempdir>/hadcd-blobs-* are agent-generated, never
+# dispatcher-chosen, so they are always mountable.
+_BLOB_STAGING_PREFIX = "hadcd-blobs-"
+
+# Isolated bridge a hardened job lands on when its payload names no
+# network. Matches the backend's CLIENT_SECURITY_PROFILE default.
+_HARDENED_DEFAULT_NETWORK = "hadcd-client-bridge"
+
+
+def _env_true(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _is_within(path: str, parent: str) -> bool:
+    """True if `path` resolves to `parent` or somewhere beneath it."""
+    path = os.path.normcase(os.path.realpath(path))
+    parent = os.path.normcase(os.path.realpath(parent))
+    return path == parent or path.startswith(parent.rstrip(os.sep) + os.sep)
+
+
+def _check_mount_allowed(host_path: str) -> None:
+    """Reject bind-mount sources the local host has not allowlisted.
+
+    The mount policy is a *local* decision: the task payload arrives from
+    the dispatcher, and a compromised or malicious dispatcher must not be
+    able to mount arbitrary host paths (state dir, /etc, the Docker
+    socket) into a container it also controls. Allowed sources are:
+
+      * the agent's own blob-staging temp dirs (<tempdir>/hadcd-blobs-*),
+        which the agent creates itself when staging task inputs/outputs;
+      * directories under any prefix in HADCD_MOUNT_ALLOWLIST, an
+        os.pathsep-separated list of absolute paths set by the host
+        operator (never by the payload).
+
+    Raises ValueError for anything else, failing the task cleanly.
+    """
+    tmp_root = os.path.realpath(tempfile.gettempdir())
+    real = os.path.normcase(os.path.realpath(host_path))
+    staging_root = os.path.normcase(tmp_root.rstrip(os.sep) + os.sep + _BLOB_STAGING_PREFIX)
+    if real.startswith(staging_root):
+        return
+    for entry in os.environ.get("HADCD_MOUNT_ALLOWLIST", "").split(os.pathsep):
+        entry = entry.strip()
+        if entry and _is_within(host_path, entry):
+            return
+    raise ValueError(
+        f"bind-mount source {host_path!r} is not allowlisted on this host — "
+        "add its parent directory to HADCD_MOUNT_ALLOWLIST "
+        "(CONTAINER_MOUNT_ALLOWLIST in the agent env) to permit it"
+    )
 
 
 class ContainerExecutionError(RuntimeError):
@@ -90,12 +145,20 @@ def _ensure_network(client, name: str) -> None:
 def _build_security_kwargs(client, args: dict) -> dict:
     """Translate an embedded security profile into docker-py run() kwargs.
 
-    Returns an empty dict when the payload carries no profile (operator
-    in-network tasks), so their behaviour is unchanged. A ``hardened`` job is
-    additionally pinned to ``privileged=False`` regardless of anything else —
-    an untrusted container is never privileged.
+    The profile travels in the payload, but the *floor* is enforced here,
+    on the node: a ``hardened`` job always drops all capabilities, gains
+    ``no-new-privileges``, runs unprivileged, and lands on an isolated
+    bridge — even if the profile fields were stripped or loosened in
+    transit. ``network_mode="host"`` is refused for every dispatched task.
+    Setting HADCD_REQUIRE_HARDENED (CONTAINER_REQUIRE_HARDENED in the
+    agent env) makes this node treat *every* container task as hardened,
+    regardless of what the dispatcher says.
+
+    Non-hardened operator tasks without a profile keep Docker defaults,
+    as before (minus host networking).
     """
     kwargs: dict = {}
+    hardened = bool(args.get("hardened")) or _env_true("HADCD_REQUIRE_HARDENED")
 
     cap_drop = args.get("cap_drop")
     if cap_drop:
@@ -115,11 +178,29 @@ def _build_security_kwargs(client, args: dict) -> dict:
     if network_mode:
         if not isinstance(network_mode, str):
             raise ValueError("'network_mode' must be a string")
+        # Host networking exposes every host-bound service (including
+        # loopback-only ones) to the container. No dispatched task gets it;
+        # a workload that genuinely needs it is a host-config decision.
+        if network_mode == "host":
+            raise ValueError(
+                "'network_mode' \"host\" is not permitted for dispatched "
+                "container tasks"
+            )
         _ensure_network(client, network_mode)
         kwargs["network"] = network_mode
 
-    if args.get("hardened"):
+    if hardened:
         kwargs["privileged"] = False
+        # The floor overrides, not merges: ALL is a superset of any
+        # payload-supplied cap_drop list.
+        kwargs["cap_drop"] = ["ALL"]
+        opts = list(kwargs.get("security_opt") or [])
+        if not any(str(o).startswith("no-new-privileges") for o in opts):
+            opts.append("no-new-privileges:true")
+        kwargs["security_opt"] = opts
+        if "network" not in kwargs:
+            _ensure_network(client, _HARDENED_DEFAULT_NETWORK)
+            kwargs["network"] = _HARDENED_DEFAULT_NETWORK
 
     return kwargs
 
@@ -233,6 +314,8 @@ def _container(args: dict) -> dict:
         mode = v.get("mode", "ro")
         if mode not in ("ro", "rw"):
             raise ValueError(f"volumes[{i}].mode must be 'ro' or 'rw'")
+        # Local mount policy — the payload never decides what is mountable.
+        _check_mount_allowed(host_path)
         volumes_dict[host_path] = {"bind": container_path, "mode": mode}
 
     # Phase 10c — output_dir: mount as /output rw, collect files after run
@@ -240,6 +323,7 @@ def _container(args: dict) -> dict:
     if output_dir is not None:
         if not isinstance(output_dir, str):
             raise ValueError("'output_dir' must be a string path")
+        _check_mount_allowed(output_dir)
         volumes_dict[output_dir] = {"bind": "/output", "mode": "rw"}
 
     try:

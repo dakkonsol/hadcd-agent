@@ -293,3 +293,34 @@ class TestHttpHandler:
             assert "<script>" not in body
         finally:
             server.shutdown()
+
+    def test_post_connect_dash_ssid_returns_400(self):
+        """An SSID starting with '-' would be parsed as an nmcli option."""
+        server, port, result_holder, done = self._start_server([])
+        try:
+            status, _ = self._post(port, "/connect", "ssid=--rescan&pw=x")
+            assert status == 400
+            assert not done.is_set()
+            assert result_holder == []
+        finally:
+            server.shutdown()
+
+    def test_post_connect_control_chars_return_400(self):
+        server, port, result_holder, done = self._start_server([])
+        try:
+            status, _ = self._post(port, "/connect", "ssid=Home%0aEvil&pw=x")
+            assert status == 400
+            assert result_holder == []
+        finally:
+            server.shutdown()
+
+    def test_post_connect_oversized_body_returns_400(self):
+        server, port, result_holder, done = self._start_server([])
+        try:
+            status, _ = self._post(
+                port, "/connect", "ssid=Home&pw=" + "x" * (17 * 1024)
+            )
+            assert status == 400
+            assert result_holder == []
+        finally:
+            server.shutdown()

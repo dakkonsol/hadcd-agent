@@ -28,9 +28,18 @@ Phone flow
 Security
 --------
 The provisioner runs as root (needed to write agent.env and restart services).
-It binds to 0.0.0.0:8080 so it is reachable from any interface.  The service
-is disabled at OS level once agent.env has all required fields, so the port is
-not open during normal operation.
+It binds to 0.0.0.0:8080 so the operator's phone can reach it over the LAN,
+but ``/save`` is gated by a one-time setup code shown on the node's console
+(and written root-only to /etc/hadcd-agent/setup_code), so a random device on
+the network cannot rewrite the node's configuration during the provisioning
+window.  Values are rejected if they contain control characters (an embedded
+newline in a form value would otherwise inject extra env keys), request
+bodies are capped, and the service is disabled at OS level once agent.env has
+all required fields, so the port is not open during normal operation.
+
+``HADCD_SETUP_CODE`` overrides the generated code (useful for ISO presets);
+setting it to ``off`` disables the gate — only do that on a physically
+isolated setup network.
 """
 
 from __future__ import annotations
@@ -38,6 +47,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import subprocess
 import textwrap
 import threading
@@ -52,13 +62,49 @@ logger = logging.getLogger("hadcd.provisioner")
 
 CONF_DIR = Path("/etc/hadcd-agent")
 ENV_FILE = CONF_DIR / "agent.env"
+SETUP_CODE_FILE = CONF_DIR / "setup_code"
 ENV_EXAMPLE = Path("/opt/hadcd-agent/agent/config.env.example")
 HA_URL = "http://localhost:8123"
 PROVISION_PORT = 8080
 PROVISION_TIMEOUT = 900  # 15 min
+# Generous cap for a settings form; anything bigger is not our wizard.
+MAX_BODY_BYTES = 64 * 1024
 REQUIRED_FIELDS = ["HADCD_API", "ENROLLMENT_TOKENS", "NODE_NAME"]
 
 _done = threading.Event()
+# Set by provision() before the server starts; None disables the gate.
+_setup_code: str | None = None
+
+
+def _make_setup_code() -> str | None:
+    """The code the /save form must echo back, or None when disabled.
+
+    Six digits, like a router WPS pin — easy to copy from the console
+    banner to a phone. HADCD_SETUP_CODE presets it; "off" disables.
+    """
+    preset = os.environ.get("HADCD_SETUP_CODE", "").strip()
+    if preset.lower() == "off":
+        return None
+    if preset:
+        return preset
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _clean_env_value(value: str) -> str:
+    """Reject values that could corrupt or extend agent.env.
+
+    agent.env is written line-per-key; a value containing a newline (or any
+    control character) would inject additional keys — including executable-
+    path keys like XMRIG_PATH that dep_check later runs. parse_qs only
+    strips *surrounding* whitespace, so this must be an explicit check.
+    """
+    value = value.strip()
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ValueError(
+            "a submitted value contains control characters — "
+            "re-enter it without line breaks"
+        )
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +119,17 @@ def provision() -> int:
         return 0
 
     local_ip = _get_local_ip() or "hadcd-node.local"
+    global _setup_code
+    _setup_code = _make_setup_code()
+    if _setup_code is not None:
+        # Also drop the code root-only on disk so an operator with console
+        # or SSH access can recover it without scrolling the journal.
+        try:
+            CONF_DIR.mkdir(mode=0o750, parents=True, exist_ok=True)
+            SETUP_CODE_FILE.write_text(_setup_code + "\n")
+            SETUP_CODE_FILE.chmod(0o600)
+        except OSError:
+            pass
     logger.info(
         "Node not yet configured.  Open http://%s:%d on your phone.",
         local_ip, PROVISION_PORT,
@@ -84,6 +141,9 @@ def provision() -> int:
     print(f"  Open on your phone:  http://{local_ip}:{PROVISION_PORT}")
     print()
     print("  Or use the mDNS name:  http://hadcd-node.local:8080")
+    if _setup_code is not None:
+        print()
+        print(f"  SETUP CODE (enter it on the form):  {_setup_code}")
     print("=" * 62)
     print()
 
@@ -234,50 +294,43 @@ class _Handler(BaseHTTPRequestHandler):
             self._html(_render_page(env))
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length).decode()
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self._send(400, "text/plain", b"bad Content-Length")
+            return
+        if length < 0 or length > MAX_BODY_BYTES:
+            self._send(413, "text/plain", b"request body too large")
+            return
+        raw = self.rfile.read(length).decode(errors="replace")
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
 
         if path == "/save":
             data = urllib.parse.parse_qs(raw)
 
             def g(k):
-                return (data.get(k, [""])[0] or "").strip()
+                return _clean_env_value(data.get(k, [""])[0] or "")
+
+            # Gate: the caller must echo the code shown on the node's
+            # console.  Without this, anyone on the LAN could rewrite
+            # agent.env (dispatcher URL, wallets, executable paths)
+            # during the provisioning window.
+            if _setup_code is not None:
+                supplied = (data.get("setup_code", [""])[0] or "").strip()
+                if not secrets.compare_digest(supplied, _setup_code):
+                    self._html(_render_error(
+                        "Wrong or missing setup code. The 6-digit code is "
+                        "shown on the node's screen (and in "
+                        "'journalctl -u hadcd-provision')."
+                    ))
+                    return
 
             updates: dict[str, str] = {}
-            if g("hadcd_api"):
-                updates["HADCD_API"] = g("hadcd_api")
-            if g("enrollment_tokens"):
-                updates["ENROLLMENT_TOKENS"] = g("enrollment_tokens")
-            if g("node_name"):
-                updates["NODE_NAME"] = g("node_name")
-            if g("max_power_kw"):
-                updates["MAX_POWER_KW"] = g("max_power_kw")
-            if g("node_type"):
-                updates["NODE_TYPE"] = g("node_type")
-            if g("ha_token"):
-                updates["BMS_SOURCE"] = "homeassistant"
-                updates["HA_TOKEN"] = g("ha_token")
-            if g("ha_entity_id"):
-                updates["HA_ENTITY_ID"] = g("ha_entity_id")
-            if g("ha_demand_kw"):
-                updates["HA_DEMAND_WHEN_HEATING_KW"] = g("ha_demand_kw")
-            if g("zone_name"):
-                updates["ZONE_NAME"] = g("zone_name")
-            if g("node_latitude") and g("node_longitude"):
-                updates["NODE_LATITUDE"] = g("node_latitude")
-                updates["NODE_LONGITUDE"] = g("node_longitude")
-            # Step 5 — mining wallets (optional; left blank = mining disabled)
-            if g("nicehash_wallet"):
-                updates["NICEHASH_WALLET"] = g("nicehash_wallet")
-                # Enable T-Rex path only if the binary was pre-installed by the ISO.
-                updates.setdefault("NICEHASH_TREX_PATH", "/opt/trex/t-rex")
-            if g("xmr_wallet"):
-                updates["XMR_WALLET_ADDRESS"] = g("xmr_wallet")
-                updates.setdefault("XMRIG_PATH", "/opt/xmrig/xmrig")
-            # Step 6 — Vast.AI (optional; machine ID is auto-discovered on first start)
-            if g("vastai_api_key"):
-                updates["VASTAI_API_KEY"] = g("vastai_api_key")
+            try:
+                self._collect_updates(g, updates)
+            except ValueError as exc:
+                self._html(_render_error(str(exc)))
+                return
 
             try:
                 _write_env(updates)
@@ -294,6 +347,43 @@ class _Handler(BaseHTTPRequestHandler):
             _done.set()
         else:
             self._send(404, "text/plain", b"not found")
+
+    @staticmethod
+    def _collect_updates(g, updates: dict[str, str]) -> None:
+        """Fill `updates` from the form via `g`; raises ValueError on bad values."""
+        if g("hadcd_api"):
+            updates["HADCD_API"] = g("hadcd_api")
+        if g("enrollment_tokens"):
+            updates["ENROLLMENT_TOKENS"] = g("enrollment_tokens")
+        if g("node_name"):
+            updates["NODE_NAME"] = g("node_name")
+        if g("max_power_kw"):
+            updates["MAX_POWER_KW"] = g("max_power_kw")
+        if g("node_type"):
+            updates["NODE_TYPE"] = g("node_type")
+        if g("ha_token"):
+            updates["BMS_SOURCE"] = "homeassistant"
+            updates["HA_TOKEN"] = g("ha_token")
+        if g("ha_entity_id"):
+            updates["HA_ENTITY_ID"] = g("ha_entity_id")
+        if g("ha_demand_kw"):
+            updates["HA_DEMAND_WHEN_HEATING_KW"] = g("ha_demand_kw")
+        if g("zone_name"):
+            updates["ZONE_NAME"] = g("zone_name")
+        if g("node_latitude") and g("node_longitude"):
+            updates["NODE_LATITUDE"] = g("node_latitude")
+            updates["NODE_LONGITUDE"] = g("node_longitude")
+        # Step 5 — mining wallets (optional; left blank = mining disabled)
+        if g("nicehash_wallet"):
+            updates["NICEHASH_WALLET"] = g("nicehash_wallet")
+            # Enable T-Rex path only if the binary was pre-installed by the ISO.
+            updates.setdefault("NICEHASH_TREX_PATH", "/opt/trex/t-rex")
+        if g("xmr_wallet"):
+            updates["XMR_WALLET_ADDRESS"] = g("xmr_wallet")
+            updates.setdefault("XMRIG_PATH", "/opt/xmrig/xmrig")
+        # Step 6 — Vast.AI (optional; machine ID is auto-discovered on first start)
+        if g("vastai_api_key"):
+            updates["VASTAI_API_KEY"] = g("vastai_api_key")
 
     def _html(self, body: str) -> None:
         self._send(200, "text/html; charset=utf-8", body.encode())
@@ -536,6 +626,17 @@ def _render_page(env: dict) -> str:
         <input type="password" name="vastai_api_key"
                value="{env.get('VASTAI_API_KEY','')}"
                placeholder="••••••••••••••••••••••••" autocomplete="off">
+      </div>
+
+      <div class="card">
+        <h2>Step 7 — Setup code</h2>
+        <p class="step">Enter the 6-digit code shown on the node's screen.
+          This proves you are the person setting up this node, not just
+          another device on the network.</p>
+        <label>Setup code <span class="req">*</span></label>
+        <input name="setup_code" inputmode="numeric" autocomplete="one-time-code"
+               placeholder="123456"
+               style="font-family:monospace;font-size:1.1rem;letter-spacing:.3em">
       </div>
 
       <button type="submit" class="btn">💾 Save &amp; Start Node</button>

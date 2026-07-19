@@ -95,10 +95,17 @@ class RentalSessionHandler:
         on_model_cached: "Callable[[str], None] | None" = None,
         media_models_path: str = "",
         comfyui_image: str = _COMFYUI_IMAGE,
+        publish_host: str = "127.0.0.1",
     ) -> None:
         self._node_id = node_id
         self._dispatcher_url = dispatcher_url.rstrip("/")
         self._node_token = node_token
+        # Interface session container ports are published on. Sessions are
+        # advertised to clients as tailnet-only, so the agent passes the
+        # node's Tailscale IP; the default is loopback so a node without
+        # Tailscale fails closed instead of exposing SSH/Ollama/ComfyUI
+        # ports to its LAN (Docker's own default would be 0.0.0.0).
+        self._publish_host = publish_host
         # Media (ComfyUI) opt-in: host models dir + image. Empty path = media
         # disabled on this node (the agent also reports media_capable=false).
         self._media_models_path = media_models_path
@@ -167,7 +174,7 @@ class RentalSessionHandler:
                         remove=False,
                         name=f"hadcd-session-{session_id[:8]}",
                         network=_SESSION_NETWORK,
-                        ports={"22/tcp": port},
+                        ports={"22/tcp": (self._publish_host, port)},
                         cap_drop=["ALL"],
                         security_opt=["no-new-privileges:true"],
                         environment={"SSH_PASSWORD": password},
@@ -211,7 +218,7 @@ class RentalSessionHandler:
                         remove=False,
                         name=f"hadcd-session-{session_id[:8]}",
                         network=_SESSION_NETWORK,
-                        ports={f"{_COMFYUI_INTERNAL_PORT}/tcp": port},
+                        ports={f"{_COMFYUI_INTERNAL_PORT}/tcp": (self._publish_host, port)},
                         cap_drop=["ALL"],
                         security_opt=["no-new-privileges:true"],
                         environment={
@@ -258,7 +265,7 @@ class RentalSessionHandler:
                         remove=False,
                         name=f"hadcd-session-{session_id[:8]}",
                         network=_SESSION_NETWORK,
-                        ports={"11434/tcp": port},
+                        ports={"11434/tcp": (self._publish_host, port)},
                         cap_drop=["ALL"],
                         security_opt=["no-new-privileges:true"],
                         environment={

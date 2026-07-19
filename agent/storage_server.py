@@ -82,9 +82,19 @@ class StorageServer:
         srv.stop()    # graceful shutdown (optional — daemon thread exits on quit)
     """
 
-    def __init__(self, pool_dir: Path, port: int) -> None:
+    def __init__(self, pool_dir: Path, port: int, host: str = "127.0.0.1") -> None:
+        """`host` is the interface to bind.
+
+        The security model relies on Tailscale as the transport (see module
+        docstring), so the caller should pass the node's Tailscale IP; the
+        default is loopback so a misconfigured node degrades to
+        unreachable-from-peers rather than open-to-the-LAN. Binding all
+        interfaces ("" / "0.0.0.0") is never appropriate here — a SHA-256
+        URL is a capability token only while the port is tailnet-only.
+        """
         self._pool_dir = pool_dir
         self._port = port
+        self._host = host
         self._server: HTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -101,7 +111,7 @@ class StorageServer:
             {"pool_dir": self._pool_dir},
         )
 
-        self._server = HTTPServer(("", self._port), handler_cls)
+        self._server = HTTPServer((self._host, self._port), handler_cls)
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             daemon=True,
@@ -109,7 +119,8 @@ class StorageServer:
         )
         self._thread.start()
         logger.info(
-            "storage: P2P server listening on :%d (pool=%s)",
+            "storage: P2P server listening on %s:%d (pool=%s)",
+            self._host,
             self._port,
             self._pool_dir,
         )

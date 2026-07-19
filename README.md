@@ -26,8 +26,13 @@ The agent:
 
 The agent does **not**:
 
-- accept inbound connections from the internet (dispatcher traffic is
-  outbound; remote access is via the host's own Tailscale, if configured);
+- listen on the public internet. All dispatcher traffic is outbound. The
+  agent does open three local listening surfaces, each deliberately
+  scoped: the P2P storage server binds the host's Tailscale IP (loopback
+  when Tailscale is down — never all interfaces), rental-session
+  containers publish ports for tailnet clients, and the first-boot setup
+  wizards listen on the LAN only until setup completes, with
+  configuration writes gated by a setup code shown on the node's console;
 - hold or move funds — payouts are settled off-device (Stripe), and any
   mining wallets configured are the host's own;
 - update itself silently or run anything not visible in this source tree.

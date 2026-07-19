@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import os
 import shutil
 import socket
 import tempfile
@@ -176,6 +177,14 @@ class Agent:
     async def run(self, stop: asyncio.Event) -> None:
         """Run the agent until `stop`. Drains in-flight tasks on exit."""
         s = self.settings
+        # Container mount/hardening policy is enforced inside the workload
+        # package (hadcd_workloads.container), which runs in spawned worker
+        # processes. Export it to the process env so workers inherit it even
+        # when the settings came from a .env file rather than the real env.
+        if s.container_mount_allowlist:
+            os.environ["HADCD_MOUNT_ALLOWLIST"] = s.container_mount_allowlist
+        if s.container_require_hardened:
+            os.environ["HADCD_REQUIRE_HARDENED"] = "1"
         executor = AgentExecutor(s.agent_concurrency)
         heat_source = build_source(s)
         session_source = build_session_source(s)
@@ -236,24 +245,30 @@ class Agent:
         # kW (room temp still reported for the Building view) and the
         # autonomous fallback never heats the empty room.
         self._heat_override_active: bool = False
-        # Phase 18c: rental session container manager.
-        self._rental_sessions = RentalSessionHandler(
-            node_id=str(self.state.node_id) if self.state.node_id else "",
-            dispatcher_url=s.hadcd_api,
-            node_token=s.node_token or "",
-            # Phase 26 — record served models so the heartbeat's
-            # cached_models list tracks the shared Ollama volume.
-            on_model_cached=self.state.record_cached_model,
-            # Media (ComfyUI) opt-in: host models dir + image. Empty = disabled.
-            media_models_path=s.comfyui_models_path,
-            comfyui_image=s.comfyui_image,
-        )
         try:
             async with httpx.AsyncClient(
                 base_url=s.hadcd_api, timeout=30.0
             ) as client:
                 await self._wait_for_backend(client)
                 await self.ensure_enrolled(client)
+                # Phase 18c: rental session container manager. Constructed
+                # after enrollment: the node id and bearer token live in
+                # AgentState (persisted identity), not in settings, and are
+                # only guaranteed present once ensure_enrolled returns.
+                self._rental_sessions = RentalSessionHandler(
+                    node_id=str(self.state.node_id) if self.state.node_id else "",
+                    dispatcher_url=s.hadcd_api,
+                    node_token=str(self.state.node_token or ""),
+                    # Session ports are tailnet-only: published on the
+                    # Tailscale IP, or loopback (unreachable) without it.
+                    publish_host=self._tailscale_ip or "127.0.0.1",
+                    # Phase 26 — record served models so the heartbeat's
+                    # cached_models list tracks the shared Ollama volume.
+                    on_model_cached=self.state.record_cached_model,
+                    # Media (ComfyUI) opt-in: host models dir + image. Empty = disabled.
+                    media_models_path=s.comfyui_models_path,
+                    comfyui_image=s.comfyui_image,
+                )
                 # Phase 13b: signal READY=1 to systemd so it knows the
                 # agent is fully live (enrolled + loops about to start).
                 # No-op outside systemd (NOTIFY_SOCKET not set).
@@ -265,11 +280,25 @@ class Agent:
                 loop.run_in_executor(None, self._image_cache.prepull_all)
                 # Phase 20c: start the P2P storage server in a daemon thread
                 # so other Tailscale-connected nodes can fetch files directly.
+                # Bound to the Tailscale IP: peers reach it over the tailnet
+                # only, so the content-hash-as-capability model holds even on
+                # nodes with unfirewalled LAN/WAN interfaces. Without
+                # Tailscale it binds loopback (unreachable to peers) rather
+                # than exposing pool files to the local network.
                 if self._storage_path:
                     from agent.storage_server import StorageServer
                     _pool_dir = Path(self._storage_path) / "pool"
                     _pool_dir.mkdir(parents=True, exist_ok=True)
-                    _storage_srv = StorageServer(_pool_dir, s.storage_server_port)
+                    _bind_host = self._tailscale_ip or "127.0.0.1"
+                    if not self._tailscale_ip:
+                        logger.warning(
+                            "storage: Tailscale not connected — P2P server "
+                            "bound to loopback; peers cannot fetch from this "
+                            "node until Tailscale is up and the agent restarts"
+                        )
+                    _storage_srv = StorageServer(
+                        _pool_dir, s.storage_server_port, host=_bind_host
+                    )
                     _storage_srv.start()
                 loops = [
                     # Phase 12a: pass vast_provider so heartbeat can
@@ -990,32 +1019,34 @@ class Agent:
                 args["output_dir"] = str(output_dir)
 
         # --- run the handler -----------------------------------------
+        # tmp_dir (downloaded inputs + container outputs) must survive
+        # until the blob upload below, so its cleanup lives in this
+        # finally: it runs on success, on any exception, and on
+        # cancellation — honouring the "always removed" contract above.
         try:
             outcome = await executor.run(task_type, args)
-        finally:
-            pass  # tmp_dir cleanup is in the outer finally below
 
-        # --- Phase 10c: blob post-processing -------------------------
-        extra_result: dict = {}
-        if output_dir and outcome.success:
-            try:
-                blob_ids = await blob_client.upload_dir(
-                    output_dir, task_id=str(task_id)
-                )
-                if blob_ids:
-                    extra_result["output_blob_ids"] = blob_ids
-                    logger.info(
-                        "task %s: uploaded %d output blob(s): %s",
-                        task_id, len(blob_ids), blob_ids,
+            # --- Phase 10c: blob post-processing ---------------------
+            extra_result: dict = {}
+            if output_dir and outcome.success:
+                try:
+                    blob_ids = await blob_client.upload_dir(
+                        output_dir, task_id=str(task_id)
                     )
-            except BlobClientError as exc:
-                # Log but don't fail the task — the computation succeeded.
-                logger.warning(
-                    "task %s: output blob upload failed: %s", task_id, exc
-                )
-
-        if tmp_dir:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+                    if blob_ids:
+                        extra_result["output_blob_ids"] = blob_ids
+                        logger.info(
+                            "task %s: uploaded %d output blob(s): %s",
+                            task_id, len(blob_ids), blob_ids,
+                        )
+                except BlobClientError as exc:
+                    # Log but don't fail the task — the computation succeeded.
+                    logger.warning(
+                        "task %s: output blob upload failed: %s", task_id, exc
+                    )
+        finally:
+            if tmp_dir:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
         # --- post result to backend ----------------------------------
         result_payload = outcome.result
