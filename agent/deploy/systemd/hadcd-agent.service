@@ -1,0 +1,108 @@
+[Unit]
+Description=HADCD Heat-Aware Compute Dispatcher — node agent
+Documentation=https://github.com/dakkonsol/hadcd-agent
+# Start after the network stack is up so the backend is reachable.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# -----------------------------------------------------------------------
+# Process type
+# -----------------------------------------------------------------------
+# "notify" tells systemd to wait for the agent to send READY=1 via
+# sd_notify before marking the service active.  The agent sends it after
+# enrollment succeeds — so a systemctl start that returns successfully
+# means the agent is enrolled and actively processing work, not just that
+# the process exists.
+Type=notify
+
+User=hadcd-agent
+Group=hadcd-agent
+
+# -----------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------
+# The env file holds HADCD_API, ENROLLMENT_TOKENS, and all node settings.
+# Install it at /etc/hadcd-agent/agent.env (mode 0640, owned by
+# root:hadcd-agent) before starting the service.  See the full annotated
+# template at agent/config.env.example.
+EnvironmentFile=/etc/hadcd-agent/agent.env
+
+# Working directory: parent of the agent package so `python -m agent` works.
+WorkingDirectory=/opt/hadcd-agent
+
+ExecStart=/opt/hadcd-agent/.venv/bin/python -m agent run
+
+# Allow 120 s for the agent to reach the backend, enroll, and send
+# READY=1.  Slow backends or a large first-run Docker pull can take ~60 s.
+TimeoutStartSec=120
+
+# On SIGTERM (systemctl stop / system shutdown), allow in-flight tasks up
+# to 60 s to finish.  The agent's internal drain window is 30 s; this is
+# the outer backstop.
+TimeoutStopSec=60
+
+# Log through journald (default for systemd services).  Tail with:
+#   journalctl -u hadcd-agent -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hadcd-agent
+
+# -----------------------------------------------------------------------
+# Restart policy — automatic recovery on crash
+# -----------------------------------------------------------------------
+# Restart on any exit: crash, unhandled exception, OOM kill, or SIGKILL.
+# "on-failure" skips clean exits; "always" restarts even after a clean
+# exit, which is right for a daemon that should never stop voluntarily.
+Restart=always
+
+# Wait 10 s before each restart.  This gap gives the backend/network time
+# to recover after a transient outage and avoids a tight CPU-spinning loop
+# on a fatal misconfiguration.
+RestartSec=10
+
+# Allow up to 5 rapid restarts within 2 minutes, then apply the default
+# cooldown.  Handles transient panics without looping forever on a
+# permanent failure (e.g. bad env file, missing binary).
+StartLimitInterval=120
+StartLimitBurst=5
+
+# -----------------------------------------------------------------------
+# Watchdog — detects a frozen event loop
+# -----------------------------------------------------------------------
+# The agent pings sd_notify("WATCHDOG=1") after every heartbeat iteration
+# (~every 10 s).  If 90 s pass without a ping, systemd assumes the asyncio
+# event loop is frozen and kills + restarts the process.
+# Threshold: 9 consecutive missed heartbeats, which tolerates transient
+# network stalls without false alarms.
+WatchdogSec=90
+
+# -----------------------------------------------------------------------
+# Security hardening
+# -----------------------------------------------------------------------
+NoNewPrivileges=yes
+
+# Mount /usr, /boot, and /efi read-only.  Leaves /etc readable (the agent
+# reads its env file via the EnvironmentFile= directive above) and /var
+# writable via ReadWritePaths below.
+ProtectSystem=full
+
+# /home and /root are inaccessible.  The agent has no business there.
+ProtectHome=yes
+
+# Writable paths: the agent's state/log directory and the Docker socket
+# (for the container task type and image cache).
+ReadWritePaths=/var/lib/hadcd-agent
+ReadWritePaths=/run/docker.sock
+
+# Give the agent user membership in the docker group so it can reach the
+# socket without owning it.  The docker group is created automatically by
+# the Docker installer on most distros.
+SupplementaryGroups=docker
+
+# Agent temp files (blob processing, workload staging) are invisible to
+# other processes on the host.
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

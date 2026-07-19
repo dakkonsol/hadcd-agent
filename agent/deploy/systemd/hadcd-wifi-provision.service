@@ -1,0 +1,38 @@
+[Unit]
+Description=HADCD WiFi captive-portal provisioner
+Documentation=https://github.com/dakkonsol/hadcd-agent
+# Must complete before the main agent can start so the agent gets a network.
+Before=hadcd-agent.service
+# Wait for the kernel to have enumerated network interfaces.
+After=network.target
+# Needs NetworkManager for nmcli.
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+# -----------------------------------------------------------------------
+# One-shot: run once to completion, then stay "active" so systemd knows
+# it succeeded.  Does nothing if the node is on ethernet or WiFi is
+# already configured (exits in < 1 s).
+# -----------------------------------------------------------------------
+Type=oneshot
+RemainAfterExit=yes
+
+# Run as root — nmcli AP creation requires elevated privileges and the
+# HTTP server binds to port 80.
+User=root
+
+WorkingDirectory=/opt/hadcd-agent
+
+ExecStart=/opt/hadcd-agent/.venv/bin/python -m agent wifi-provision
+
+# Allow up to 15 minutes for the operator to complete provisioning.
+# The script itself timeouts at 10 minutes; this is the outer backstop.
+TimeoutStartSec=900
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hadcd-wifi-provision
+
+[Install]
+WantedBy=multi-user.target

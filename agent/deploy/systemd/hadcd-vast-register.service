@@ -1,0 +1,33 @@
+[Unit]
+Description=HADCD Vast.AI host registration (one-shot)
+Documentation=https://github.com/dakkonsol/hadcd-agent
+# Run after the network is up and the agent venv is present.
+After=network-online.target
+Wants=network-online.target
+# Only run if the agent venv exists (i.e. install-agent.sh completed).
+ConditionPathExists=/opt/hadcd-agent/.venv/bin/python
+# Skip if already registered.
+ConditionPathExists=!/var/lib/hadcd-agent/vast-registered
+# Skip if agent.env has not been edited yet (file must be non-empty).
+ConditionFileNotEmpty=/etc/hadcd-agent/agent.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# vast-register.sh streams its own output to /var/log/hadcd-vast-register.log.
+# It also goes to the journal so you can follow with:
+#   journalctl -u hadcd-vast-register -f
+ExecStart=/bin/bash /opt/hadcd-agent/scripts/vast-register.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hadcd-vast-register
+
+# The GPU benchmark takes up to 15 minutes.
+TimeoutStartSec=1200
+
+# Self-disable so this unit is inert on subsequent boots once registered.
+ExecStartPost=/bin/systemctl disable hadcd-vast-register.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,53 @@
+[Unit]
+Description=Home Assistant Container (HADCD node — BMS heat-demand source)
+Documentation=https://www.home-assistant.io/installation/linux#docker-compose
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+# -----------------------------------------------------------------------
+# Docker run in foreground — systemd tracks the docker process itself.
+# The HA container is removed (--rm) on clean exit and recreated by
+# ExecStart on each restart.
+# -----------------------------------------------------------------------
+Type=simple
+User=root
+
+# Pull the latest image before starting.  Cached on second boot (~1 s).
+# First-boot download is ~1.5 GB — allow 10 minutes.
+ExecStartPre=/usr/bin/docker pull ghcr.io/home-assistant/home-assistant:stable
+
+# Remove any leftover container from a previous unclean shutdown.
+# The =-  prefix makes systemd ignore a non-zero exit from these two
+# commands (the container may not exist on a clean first boot).
+ExecStartPre=-/usr/bin/docker stop homeassistant
+ExecStartPre=-/usr/bin/docker rm   homeassistant
+
+# HA Container with host networking so port 8123 is available on the
+# node's local IP without any port-mapping config.  --privileged is the
+# official HA recommendation for mDNS / USB device pass-through.
+# /etc/homeassistant persists the HA configuration across restarts.
+ExecStart=/usr/bin/docker run \
+    --name homeassistant \
+    --rm \
+    --privileged \
+    --network=host \
+    -v /etc/homeassistant:/config \
+    -v /etc/localtime:/etc/localtime:ro \
+    ghcr.io/home-assistant/home-assistant:stable
+
+# Allow extra time for the first-boot image pull (up to 10 min).
+TimeoutStartSec=600
+TimeoutStopSec=60
+
+# Restart after crashes but not after intentional `systemctl stop`.
+Restart=on-failure
+RestartSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hadcd-ha
+
+[Install]
+WantedBy=multi-user.target

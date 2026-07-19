@@ -1,0 +1,26 @@
+# The agent needs an async HTTP client (httpx) and env-driven config
+# (pydantic-settings). Versions pinned to match the backend so the
+# shared hadcd_workloads package — and any future shared helpers —
+# always see a compatible Python / Pydantic environment.
+httpx==0.28.1
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# Phase 10a — Docker SDK so the agent can run `container` task type
+# workloads on its host. Requires /var/run/docker.sock mounted into
+# the agent service. The agent invokes Docker as sibling containers
+# on the host, not nested. See hadcd_workloads/container.py.
+docker==7.1.0
+
+# Phase 16b — Kasa KP125M smart plug power meter.
+# python-kasa 0.7+ is required for the KLAP protocol used by KP125M.
+# On non-KLAP devices (KP115, older KP125) any version ≥ 0.5 works.
+# Install is optional: set KASA_PLUG_IP="" to disable without removing this.
+python-kasa>=0.7.0
+
+# Test deps — only used when running `pytest tests/` against the
+# agent image. Kept in the same file (rather than a requirements-dev
+# split) because the agent is small and there is no production-image
+# slimness budget yet.
+pytest==8.3.4
+pytest-asyncio==0.25.0

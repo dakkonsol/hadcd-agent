@@ -1,0 +1,40 @@
+[Unit]
+Description=HADCD node configuration wizard (phone-friendly setup on port 8080)
+Documentation=https://github.com/dakkonsol/hadcd-agent
+# Must finish before the main agent starts so agent.env is written first.
+Before=hadcd-agent.service
+# WiFi must be up so the phone can reach this node over the local network.
+After=hadcd-wifi-provision.service
+# Start alongside HA so the wizard can check HA status and enumerate
+# climate entities from the HA REST API.
+After=hadcd-ha.service
+Wants=hadcd-ha.service
+
+[Service]
+# -----------------------------------------------------------------------
+# One-shot: exits immediately if the node is already configured, otherwise
+# serves the wizard on port 8080 until the operator saves the form (or
+# the 15-minute timeout fires).  RemainAfterExit keeps the unit "active"
+# so systemd does not restart it on subsequent boots.
+# -----------------------------------------------------------------------
+Type=oneshot
+RemainAfterExit=yes
+
+# Run as root — writes /etc/hadcd-agent/agent.env (mode 0640,
+# root:hadcd-agent) and calls `systemctl restart hadcd-agent`.
+User=root
+
+WorkingDirectory=/opt/hadcd-agent
+
+ExecStart=/opt/hadcd-agent/.venv/bin/python -m agent provision
+
+# Allow 15 minutes for the operator to complete provisioning on their phone.
+# The wizard script itself also has a 900-second hard timeout.
+TimeoutStartSec=900
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hadcd-provision
+
+[Install]
+WantedBy=multi-user.target
