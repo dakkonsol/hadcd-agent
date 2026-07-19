@@ -38,7 +38,7 @@ from agent.blob_client import BlobClient, BlobClientError, safe_blob_name
 from agent.config import AgentSettings
 from agent.executor import AgentExecutor
 from agent.heat_source import HeatSource, build_source
-from agent.image_cache import ImageCacheManager, build_image_cache
+from agent.image_cache import build_image_cache
 from agent.kasa_power_meter import KasaPowerMeter, build_kasa_meter
 from agent.rental_session_handler import RentalSessionHandler
 from agent.session_source import SessionSource, build_session_source

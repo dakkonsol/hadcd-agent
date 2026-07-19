@@ -282,7 +282,7 @@ class AgentSettings(BaseSettings):
     # it a `media` session. When set, it is the host directory bind-mounted
     # into the ComfyUI container's models dir (and the target directory for
     # remote model sync). Media sessions are only ever dispatched to
-    # operator-owned nodes — see docs/media-workload-scope.md.
+    # operator-owned nodes — see WORKLOAD_POLICY.md §4a.
     comfyui_models_path: str = ""
     comfyui_image: str = "ghcr.io/ai-dock/comfyui:latest"
 

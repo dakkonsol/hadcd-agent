@@ -1,0 +1,15 @@
+# Build context lives at the repo root (see agent/Dockerfile).
+# Keep the image lean and reproducible: no caches, tests, venvs, or
+# local secrets/state.
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.git/
+.github/
+**/tests/
+config.env
+*.csv
+.venv/
+venv/
+*.md

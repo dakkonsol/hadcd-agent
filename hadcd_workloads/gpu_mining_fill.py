@@ -243,8 +243,10 @@ def run_gpu_mining_fill(args: dict) -> dict:
     pool_port = _env_int("NICEHASH_POOL_PORT", 9200)
     algo = _env("NICEHASH_ALGO") or "ethash"
     gpu_index = _env_int("MINING_GPU_INDEX", 0)
-    pressure_pct = _env_float("MINING_GPU_PRESSURE_PCT", 20.0)
-    resume_pct = _env_float("MINING_GPU_RESUME_PCT", 10.0)
+    # NOTE: pressure detection below is presence-based — any non-miner CUDA
+    # process on the GPU pauses the miner. The MINING_GPU_PRESSURE_PCT /
+    # MINING_GPU_RESUME_PCT utilisation thresholds are not consulted by this
+    # handler; they are reserved for a future utilisation-gated policy.
     poll_sec = _env_float("MINING_POLL_INTERVAL_SEC", 10.0)
     log_path = _env(
         "MINING_PAYOUT_LOG",

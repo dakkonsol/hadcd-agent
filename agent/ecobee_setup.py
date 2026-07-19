@@ -275,13 +275,13 @@ def main() -> int:
     print(f"Wrote {state_file}")
     print()
     print("Next steps:")
-    print(f"  1. Set BMS_SOURCE=ecobee in your agent config")
+    print("  1. Set BMS_SOURCE=ecobee in your agent config")
     print(f"  2. Set ECOBEE_API_KEY={api_key}")
     print(f"  3. Set ECOBEE_THERMOSTAT_ID={thermostat_id}")
     print(f"  4. Set ECOBEE_STATE_FILE={state_file}")
-    print(f"  5. Set ECOBEE_DEMAND_WHEN_HEATING_KW to the kW value to")
-    print(f"     report when the thermostat is calling for heat.")
-    print(f"  6. Restart the agent.")
+    print("  5. Set ECOBEE_DEMAND_WHEN_HEATING_KW to the kW value to")
+    print("     report when the thermostat is calling for heat.")
+    print("  6. Restart the agent.")
     print()
     return 0
 

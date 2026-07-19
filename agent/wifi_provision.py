@@ -30,11 +30,8 @@ The phone is only needed once.
 from __future__ import annotations
 
 import html
-import json
 import logging
-import re
 import subprocess
-import sys
 import threading
 import urllib.parse
 from dataclasses import dataclass

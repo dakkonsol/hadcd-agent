@@ -17,7 +17,6 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 
 from agent.agent import Agent
 from agent.config import AgentSettings

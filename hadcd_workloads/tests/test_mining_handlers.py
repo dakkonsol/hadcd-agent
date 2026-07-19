@@ -23,11 +23,8 @@ from __future__ import annotations
 import csv
 import os
 import subprocess
-import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -389,7 +386,7 @@ class TestP2poolFillAutoThreads:
 
         with patch.dict(os.environ, env, clear=False), \
              patch.object(mod, "subprocess") as mock_sub, \
-             patch.object(mod, "_default_threads", return_value=7) as mock_dt:
+             patch.object(mod, "_default_threads", return_value=7):
 
             mock_sub.Popen.return_value = fake_proc
             mock_sub.DEVNULL = subprocess.DEVNULL
@@ -408,17 +405,14 @@ class TestMiningHandlersRegistered:
     """Both handlers must be registered in the workload registry."""
 
     def test_gpu_mining_fill_registered(self):
-        import hadcd_workloads  # triggers @register decorators
         from hadcd_workloads.registry import _REGISTRY
         assert "gpu_mining_fill" in _REGISTRY
 
     def test_p2pool_fill_registered(self):
-        import hadcd_workloads
         from hadcd_workloads.registry import _REGISTRY
         assert "p2pool_fill" in _REGISTRY
 
     def test_run_registered_calls_gpu_handler(self):
-        import hadcd_workloads
         from hadcd_workloads.registry import run_registered
         with patch.dict(os.environ, {
             "NICEHASH_TREX_PATH": "",
@@ -429,7 +423,6 @@ class TestMiningHandlersRegistered:
         assert "skipped" in result
 
     def test_run_registered_calls_p2pool_handler(self):
-        import hadcd_workloads
         from hadcd_workloads.registry import run_registered
         with patch.dict(os.environ, {
             "XMRIG_PATH": "",

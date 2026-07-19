@@ -1,0 +1,52 @@
+# Packaging + tooling metadata for the HADCD node agent.
+#
+# This repository ships two importable top-level packages that must sit
+# side by side on the Python path: `agent` (the service) and
+# `hadcd_workloads` (everything it can be asked to run). They are run in
+# place (python -m agent), not installed as a wheel today, so this file
+# exists mainly to declare the supported Python range and to configure
+# ruff / pytest for local dev and CI.
+
+[project]
+name = "hadcd-agent"
+version = "0.1.0"
+description = "Host-side node agent for the HADCD heat-aware compute dispatch network"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Brett Stone", email = "brett.david.stone@gmail.com" }]
+dependencies = [
+    "httpx==0.28.1",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.0",
+    "docker==7.1.0",
+    "python-kasa>=0.7.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/dakkonsol/hadcd-agent"
+"Threat model" = "https://github.com/dakkonsol/hadcd-agent/blob/main/docs/THREAT-MODEL.md"
+
+# --- ruff -------------------------------------------------------------
+# Default rule set (pyflakes F + a subset of pycodestyle E). Line length
+# is intentionally not enforced — the codebase predates a formatter and a
+# reflow would bury real changes in noise. The point of CI lint is to
+# catch dead code and undefined names, which the default set does.
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["**/__pycache__"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+# --- pytest -----------------------------------------------------------
+# The agent and hadcd_workloads suites are run as separate invocations in
+# CI because they contain like-named test modules that collide under a
+# single rootdir. Per-package pytest.ini files (agent/pytest.ini) set
+# asyncio mode; nothing extra is needed here.

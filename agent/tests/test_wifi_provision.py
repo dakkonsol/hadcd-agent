@@ -12,15 +12,11 @@ The nmcli subprocess calls are patched out in every test.
 
 from __future__ import annotations
 
-import io
 import json
-import socket
 import threading
 from http.server import HTTPServer
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 import agent.wifi_provision as wp
 
@@ -250,7 +246,7 @@ class TestHttpHandler:
         import urllib.request
         server, port, _, _ = self._start_server([])
         try:
-            req = urllib.request.Request(
+            urllib.request.Request(
                 f"http://127.0.0.1:{port}/captive-portal-check",
                 headers={"User-Agent": "CaptiveNetworkSupport"},
             )

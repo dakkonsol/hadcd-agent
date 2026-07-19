@@ -7,11 +7,9 @@ The module must:
 
 from __future__ import annotations
 
-import os
 import socket
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 

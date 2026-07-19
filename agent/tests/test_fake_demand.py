@@ -7,9 +7,7 @@ and time.sleep, both of which are controlled via mocking).
 from __future__ import annotations
 
 import json
-import time
-from pathlib import Path
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 import pytest
 

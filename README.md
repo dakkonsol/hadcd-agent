@@ -47,12 +47,36 @@ implementations of everything the agent can be asked to run — the
 containerised session runner, the CPU/GPU mining fill, and the synthetic
 heat fill — so "what exactly runs on my machine" has a source-level answer.
 
+## Before you trust this on your hardware
+
+Read **[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)**. It states exactly
+what a host is trusting, what the agent enforces locally to bound a
+compromised dispatcher, and what it deliberately does not defend against
+(notably: Docker-socket access is root-equivalent, so container-accepting
+nodes belong on a dedicated, segmented machine). The workload policy —
+which categories of work are accepted or refused, and why — is in
+[WORKLOAD_POLICY.md](WORKLOAD_POLICY.md).
+
+Found a security issue? See [SECURITY.md](SECURITY.md).
+
+## Installing
+
+- **Linux (systemd):** [agent/deploy/systemd/README.md](agent/deploy/systemd/README.md),
+  or the one-shot [`scripts/install-agent.sh`](scripts/install-agent.sh).
+- **Windows (NSSM):** [agent/deploy/windows/README.md](agent/deploy/windows/README.md).
+- **Full operator walkthrough:** [docs/deployment.md](docs/deployment.md).
+
 ## Running the tests
 
 ```
 cd agent
-python -m pytest
+python -m pytest          # agent suite
+cd ../hadcd_workloads
+python -m pytest          # workload suite
 ```
+
+CI runs both suites on Python 3.11 and 3.12, plus `ruff` and
+`pip-audit`, on every push.
 
 ## Relationship to the HADCD network
 

@@ -18,9 +18,7 @@ from __future__ import annotations
 import csv
 import multiprocessing
 import os
-import time
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -115,7 +113,7 @@ class TestThreadAutoDetection:
         with patch.dict(os.environ, env, clear=False), \
              patch.object(mod.multiprocessing, "Process", return_value=fake_proc), \
              patch.object(mod.multiprocessing, "Value") as mock_val, \
-             patch.object(mod, "_default_threads", return_value=5) as mock_dt:
+             patch.object(mod, "_default_threads", return_value=5):
             mock_val.return_value = MagicMock()
             result = mod.run_synthetic_heat_fill({"duration_sec": 0.05})
 
@@ -268,12 +266,10 @@ class TestDefaultThreads:
 
 class TestSyntheticHandlerRegistered:
     def test_registered_in_registry(self):
-        import hadcd_workloads  # triggers @register decorators
         from hadcd_workloads.registry import _REGISTRY
         assert "synthetic_heat_fill" in _REGISTRY
 
     def test_run_registered_dispatches_handler(self):
-        import hadcd_workloads
         from hadcd_workloads.registry import run_registered
         from hadcd_workloads import synthetic_heat_fill as mod
 

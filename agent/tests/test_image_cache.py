@@ -16,7 +16,6 @@ import sys
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from agent.image_cache import ImageCacheManager, build_image_cache
 
@@ -277,7 +276,6 @@ def test_maybe_gc_prunes_unused_when_still_over_budget_after_dangling():
     budget_gb = 10.0
     over_budget = int(20 * _GIB)
     after_dangling = int(15 * _GIB)   # still over budget
-    after_unused = int(5 * _GIB)      # finally under budget
 
     call_count = [0]
 
