@@ -86,8 +86,11 @@ class TestFindTailscaleBinary:
             ),
             patch("os.path.isfile") as mock_isfile,
         ):
-            # Only the first candidate exists
-            mock_isfile.side_effect = lambda p: "Program Files\\" in p and "(x86)" not in p and "Local" not in p
+            # Only the first candidate exists. Separator-agnostic so the test is
+            # correct whether os.path.join emits "\\" (Windows host) or "/"
+            # (Linux CI container): match the ProgramFiles candidate, excluding
+            # the "(x86)" and LOCALAPPDATA ("AppData") ones.
+            mock_isfile.side_effect = lambda p: "Program Files" in p and "(x86)" not in p and "AppData" not in p
             result = _find_tailscale_binary()
             assert result is not None
             assert "tailscale.exe" in result
