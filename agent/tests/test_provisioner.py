@@ -90,7 +90,10 @@ def test_save_with_correct_code_writes_env(server):
         "NODE_NAME": "Living Room PC",
         "HADCD_API": "http://100.1.2.3:8000",
     }]
-    assert prov._done.is_set()
+    # The handler sets _done after sending the 200, so the client can observe the
+    # response slightly before the server thread sets the event. Wait (bounded)
+    # instead of asserting immediately, to remove a timing-race flake.
+    assert prov._done.wait(2.0)
 
 
 def test_value_with_embedded_newline_is_rejected(server):
