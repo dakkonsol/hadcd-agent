@@ -62,9 +62,12 @@ _OLLAMA_MODELS_VOLUME = "hadcd-ollama-models"
 # a `media` session (the dispatcher enforces owner_kind=operator + media_capable;
 # see backend session_assigner._node_serves_session_type). The operator's
 # COMFYUI_MODELS_PATH host dir is bind-mounted so models persist across
-# sessions and are the target for remote model sync. ComfyUI serves on 8188.
+# sessions and are the target for remote model sync. NOTE: the ai-dock ComfyUI
+# image serves the ComfyUI API on 18188 (8188 is its caddy service-portal, not
+# the API). Publishing/health-checking 8188 leaves ComfyUI unreachable, which
+# made the dispatcher reap media sessions as unhealthy — so target 18188.
 _COMFYUI_IMAGE = "ghcr.io/ai-dock/comfyui:latest"
-_COMFYUI_INTERNAL_PORT = 8188
+_COMFYUI_INTERNAL_PORT = 18188
 
 
 def _random_port() -> int:
@@ -116,6 +119,12 @@ class RentalSessionHandler:
         self._on_model_cached = on_model_cached
         # session_id → {"container_id": str, "port": int, "type": str}
         self._active: dict[str, dict[str, Any]] = {}
+        # session_ids with an in-flight teardown, so overlapping heartbeat
+        # polls don't launch duplicate _stop_session tasks for the same id.
+        self._stopping: set[str] = set()
+        # Active sessions currently being reconciled against Docker. This
+        # prevents overlapping heartbeat polls from reporting the same loss.
+        self._reconciling: set[str] = set()
 
     # ── Public interface — called from heartbeat loop ─────────────────────────
 
@@ -137,7 +146,17 @@ class RentalSessionHandler:
 
             if status == "starting" and sid not in self._active:
                 tasks.append(self._start_session(sid, stype, model))
-            elif status == "stopping" and sid in self._active:
+            elif status == "active" and sid not in self._reconciling:
+                # Verify the real container on every heartbeat. This also
+                # reconstructs the in-memory map after an agent restart.
+                self._reconciling.add(sid)
+                tasks.append(self._reconcile_active_session(sid, stype))
+            elif status == "stopping" and sid not in self._stopping:
+                # Tear down regardless of self._active membership: after an
+                # agent restart self._active is empty, but the container
+                # (hadcd-session-<sid8>) may still be running and would orphan
+                # forever if we only reaped sessions this process started.
+                self._stopping.add(sid)
                 tasks.append(self._stop_session(sid))
             # 'active' with container already running → no-op
 
@@ -218,8 +237,13 @@ class RentalSessionHandler:
                         name=f"hadcd-session-{session_id[:8]}",
                         network=_SESSION_NETWORK,
                         ports={f"{_COMFYUI_INTERNAL_PORT}/tcp": (self._publish_host, port)},
-                        cap_drop=["ALL"],
-                        security_opt=["no-new-privileges:true"],
+                        # NOTE: unlike ssh/api_endpoint, the media (ai-dock ComfyUI)
+                        # image runs its services via supervisord, which must
+                        # setgroups()/setuid() from root down to uid 1000 on boot —
+                        # cap_drop=ALL + no-new-privileges strips CAP_SETUID/SETGID
+                        # and the container never starts ComfyUI. Media sessions only
+                        # go to operator-owned nodes running a trusted image, so we
+                        # run with Docker's default capability set here.
                         environment={
                             "DIRECT_ADDRESS": "0.0.0.0",
                             "DIRECT_ADDRESS_PORT": str(_COMFYUI_INTERNAL_PORT),
@@ -322,16 +346,19 @@ class RentalSessionHandler:
             logger.exception("failed to start rental session container %s", session_id)
 
     async def _stop_session(self, session_id: str) -> None:
-        """Stop and remove the session container, then report to dispatcher."""
-        info = self._active.pop(session_id, None)
-        if info is None:
-            return
+        """Stop and remove the session container, then report to dispatcher.
 
+        Does not depend on self._active: the container name is deterministic
+        (hadcd-session-<sid8>), so an orphaned container from a previous agent
+        lifetime is still reaped. Idempotent — a no-op if already gone.
+        """
+        self._active.pop(session_id, None)
         try:
             import docker  # type: ignore[import]
             client = docker.from_env()
             containers = client.containers.list(
-                filters={"name": f"hadcd-session-{session_id[:8]}"}
+                all=True,
+                filters={"name": f"hadcd-session-{session_id[:8]}"},
             )
             for c in containers:
                 try:
@@ -339,15 +366,68 @@ class RentalSessionHandler:
                     c.remove()
                     logger.info(
                         "rental session %s: container %s stopped and removed",
-                        session_id, info["container_id"],
+                        session_id, c.id[:12],
                     )
                 except Exception:
                     logger.exception("error stopping container for session %s", session_id)
         except Exception:
             logger.exception("docker error stopping session %s", session_id)
+        finally:
+            self._stopping.discard(session_id)
 
         # Always report stopped — even if Docker raised, the session is done.
         await self._post_stopped(session_id)
+
+    async def _reconcile_active_session(
+        self, session_id: str, stype: str
+    ) -> None:
+        """Verify an ACTIVE dispatcher session still has a running container.
+
+        The deterministic container name survives agent restarts. A running
+        match rebuilds the in-memory map; an absent or exited match is reported
+        to the dispatcher. Docker API failures are only logged — uncertainty
+        must never terminate a potentially healthy customer session.
+        """
+        expected_name = f"hadcd-session-{session_id[:8]}"
+        try:
+            import docker  # type: ignore[import]
+            client = docker.from_env()
+
+            def _find_running():
+                matches = client.containers.list(
+                    all=True, filters={"name": expected_name}
+                )
+                exact = [c for c in matches if getattr(c, "name", "") == expected_name]
+                for container in exact:
+                    container.reload()
+                    if getattr(container, "status", "") == "running":
+                        return container
+                return None
+
+            container = await asyncio.get_event_loop().run_in_executor(
+                None, _find_running
+            )
+            if container is not None:
+                self._active[session_id] = {
+                    "container_id": container.id[:12],
+                    "port": None,
+                    "type": stype,
+                }
+                return
+
+            self._active.pop(session_id, None)
+            logger.error(
+                "active rental session %s has no running container %s",
+                session_id, expected_name,
+            )
+            await self._post_lost(session_id)
+        except Exception:
+            logger.exception(
+                "could not reconcile active rental session %s; preserving it",
+                session_id,
+            )
+        finally:
+            self._reconciling.discard(session_id)
 
     # ── Dispatcher callbacks ──────────────────────────────────────────────────
 
@@ -395,6 +475,31 @@ class RentalSessionHandler:
                 )
         except Exception:
             logger.exception("stopped POST failed for session %s", session_id)
+
+    async def _post_lost(self, session_id: str) -> None:
+        """Tell the dispatcher an ACTIVE container disappeared."""
+        url = (
+            f"{self._dispatcher_url}/api/nodes/{self._node_id}"
+            f"/sessions/{session_id}/lost"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=10) as http:
+                resp = await http.post(
+                    url,
+                    headers={"Authorization": f"Bearer {self._node_token}"},
+                )
+            if resp.status_code == 200:
+                logger.warning(
+                    "rental session %s container loss accepted by dispatcher",
+                    session_id,
+                )
+            else:
+                logger.warning(
+                    "lost POST for session %s returned %d: %s",
+                    session_id, resp.status_code, resp.text[:200],
+                )
+        except Exception:
+            logger.exception("lost POST failed for session %s", session_id)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
