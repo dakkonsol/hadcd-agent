@@ -229,6 +229,17 @@ class Agent:
             check_vastai=bool(s.vastai_api_key),
             check_mining=bool(s.nicehash_wallet or s.xmr_wallet_address),
         )
+        # Populate cached_models from the actual Ollama volume at startup so
+        # pre-pulled models are reported to warm-model routing right away
+        # (record_cached_model only tracks models a session served). Refreshed
+        # periodically in the heartbeat loop.
+        try:
+            from agent.rental_session_handler import list_cached_models
+            _scanned = list_cached_models()
+            if _scanned:
+                self.state.cached_models = _scanned
+        except Exception:
+            logger.debug("startup cached_models scan failed", exc_info=True)
         self._dep_check_counter: int = 0  # refreshed every _DEP_CHECK_INTERVAL heartbeats
         # Phase 17d: tracks whether we have just applied a pending config
         # and need to ack it on the next heartbeat.
@@ -518,6 +529,15 @@ class Agent:
                     check_vastai=bool(s.vastai_api_key),
                     check_mining=bool(s.nicehash_wallet or s.xmr_wallet_address),
                 )
+                # Refresh cached_models from the Ollama volume on the same
+                # cadence so pre-pulled / GC'd models stay accurate for routing.
+                try:
+                    from agent.rental_session_handler import list_cached_models
+                    _scanned = list_cached_models()
+                    if _scanned:
+                        self.state.cached_models = _scanned
+                except Exception:
+                    logger.debug("cached_models volume scan failed", exc_info=True)
 
             # --- Phase 15a/15c: autonomous offline fallback -----------
             #

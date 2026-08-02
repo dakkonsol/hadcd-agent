@@ -58,6 +58,63 @@ _SESSION_NETWORK = "hadcd-rental-bridge"
 # something real to route to.
 _OLLAMA_MODELS_VOLUME = "hadcd-ollama-models"
 
+
+def list_cached_models(volume_name: str = _OLLAMA_MODELS_VOLUME) -> list[str]:
+    """Return the models actually present in the shared Ollama volume as
+    ``name:tag`` (e.g. ``llama3.1:8b``).
+
+    Reads Ollama's on-disk manifest tree. The agent runs unprivileged and
+    cannot read the root-owned Docker volume path directly, so we list it from
+    inside a short-lived container (root there) that reuses the Ollama image
+    already on the node. Returns [] on any error or if the volume/model store
+    does not exist yet — a node with no pulled models simply reports none.
+
+    This makes PRE-PULLED models (not just ones a past session served) visible
+    to the dispatcher's warm-model routing.
+    """
+    try:
+        import docker  # type: ignore[import]
+
+        client = docker.from_env()
+        try:
+            client.volumes.get(volume_name)
+        except Exception:
+            return []
+        out = client.containers.run(
+            _OLLAMA_IMAGE,
+            entrypoint="/bin/sh",
+            command=[
+                "-c",
+                "find /root/.ollama/models/manifests -type f 2>/dev/null "
+                "| sed 's#^/root/.ollama/models/manifests/##'",
+            ],
+            volumes={volume_name: {"bind": "/root/.ollama", "mode": "ro"}},
+            network_disabled=True,
+            remove=True,
+            detach=False,
+        )
+        text = out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
+    except Exception:
+        return []
+
+    models: list[str] = []
+    for line in text.splitlines():
+        # Manifest path: <registry>/<namespace>/<name...>/<tag>
+        parts = [p for p in line.strip().split("/") if p]
+        if len(parts) < 3:
+            continue
+        _registry, namespace, *rest = parts
+        tag = rest[-1]
+        name = "/".join(rest[:-1])
+        if not name:
+            continue
+        # Official models live under the 'library' namespace and drop it from
+        # the displayed name (llama3.1:8b); anything else keeps its namespace.
+        if namespace != "library":
+            name = f"{namespace}/{name}"
+        models.append(f"{name}:{tag}")
+    return sorted(set(models))
+
 # Media (ComfyUI) container. Only operator-owned, opted-in nodes ever receive
 # a `media` session (the dispatcher enforces owner_kind=operator + media_capable;
 # see backend session_assigner._node_serves_session_type). The operator's
