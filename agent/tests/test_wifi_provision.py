@@ -265,7 +265,10 @@ class TestHttpHandler:
             )
             assert status == 200
             assert "Connected" in body
-            assert done.is_set()
+            # The handler fires `done` after sending the 200, so the client can
+            # see the response slightly before the server thread sets the event.
+            # Wait (bounded) instead of asserting immediately — removes a flake.
+            assert done.wait(2.0)
             assert len(result_holder) == 1
             assert result_holder[0].ssid == "HomeNetwork"
             assert result_holder[0].password == "supersecret"
