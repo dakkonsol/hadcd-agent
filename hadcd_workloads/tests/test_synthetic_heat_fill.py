@@ -269,12 +269,13 @@ class TestSyntheticHandlerRegistered:
         from hadcd_workloads.registry import _REGISTRY
         assert "synthetic_heat_fill" in _REGISTRY
 
-    def test_run_registered_dispatches_handler(self):
+    def test_run_registered_dispatches_handler(self, tmp_path):
         from hadcd_workloads.registry import run_registered
         from hadcd_workloads import synthetic_heat_fill as mod
 
         fake_proc = _fake_process()
-        with patch.object(mod.multiprocessing, "Process", return_value=fake_proc), \
+        with patch.dict(os.environ, _env_for(tmp_path), clear=False), \
+             patch.object(mod.multiprocessing, "Process", return_value=fake_proc), \
              patch.object(mod.multiprocessing, "Value") as mock_val:
             mock_val.return_value = MagicMock()
             result = run_registered("synthetic_heat_fill", {"duration_sec": 0.05})
