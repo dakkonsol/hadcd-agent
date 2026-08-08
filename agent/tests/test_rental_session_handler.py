@@ -62,6 +62,16 @@ def _handler() -> RentalSessionHandler:
     )
 
 
+def test_handler_uses_configured_ollama_image() -> None:
+    h = RentalSessionHandler(
+        node_id="node-1",
+        dispatcher_url="http://disp:8000",
+        node_token="tok",
+        ollama_image="ollama/ollama@sha256:test-digest",
+    )
+    assert h._ollama_image == "ollama/ollama@sha256:test-digest"
+
+
 # ---- tests -----------------------------------------------------------
 
 

@@ -22,5 +22,5 @@ python-kasa>=0.7.0
 # agent image. Kept in the same file (rather than a requirements-dev
 # split) because the agent is small and there is no production-image
 # slimness budget yet.
-pytest==8.3.4
-pytest-asyncio==0.25.0
+pytest==9.0.3
+pytest-asyncio==1.4.0

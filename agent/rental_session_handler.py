@@ -46,7 +46,7 @@ _PORT_MAX = 59999
 
 # Default Docker images (operator can override via env).
 _SSH_IMAGE = "hadcd/ssh-gpu:latest"
-_OLLAMA_IMAGE = "ollama/ollama:latest"
+_OLLAMA_IMAGE = "ollama/ollama@sha256:6345fbc18bd73a1e16404be681dbc6fd291a027cab43ed541abe78c4c81051b0"
 
 # Docker bridge network for rental sessions (created once on agent startup).
 _SESSION_NETWORK = "hadcd-rental-bridge"
@@ -59,7 +59,10 @@ _SESSION_NETWORK = "hadcd-rental-bridge"
 _OLLAMA_MODELS_VOLUME = "hadcd-ollama-models"
 
 
-def list_cached_models(volume_name: str = _OLLAMA_MODELS_VOLUME) -> list[str]:
+def list_cached_models(
+    volume_name: str = _OLLAMA_MODELS_VOLUME,
+    image: str = _OLLAMA_IMAGE,
+) -> list[str]:
     """Return the models actually present in the shared Ollama volume as
     ``name:tag`` (e.g. ``llama3.1:8b``).
 
@@ -81,7 +84,7 @@ def list_cached_models(volume_name: str = _OLLAMA_MODELS_VOLUME) -> list[str]:
         except Exception:
             return []
         out = client.containers.run(
-            _OLLAMA_IMAGE,
+            image,
             entrypoint="/bin/sh",
             command=[
                 "-c",
@@ -154,6 +157,7 @@ class RentalSessionHandler:
         on_model_cached: "Callable[[str], None] | None" = None,
         media_models_path: str = "",
         comfyui_image: str = _COMFYUI_IMAGE,
+        ollama_image: str = _OLLAMA_IMAGE,
         publish_host: str = "127.0.0.1",
     ) -> None:
         self._node_id = node_id
@@ -169,6 +173,7 @@ class RentalSessionHandler:
         # disabled on this node (the agent also reports media_capable=false).
         self._media_models_path = media_models_path
         self._comfyui_image = comfyui_image
+        self._ollama_image = ollama_image
         # Phase 26 — called with the model name once an api_endpoint
         # container is serving it (the model now sits in the shared
         # volume). The agent uses this to keep the heartbeat's
@@ -340,7 +345,7 @@ class RentalSessionHandler:
                 container = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: client.containers.run(
-                        _OLLAMA_IMAGE,
+                        self._ollama_image,
                         detach=True,
                         remove=False,
                         name=f"hadcd-session-{session_id[:8]}",
