@@ -235,7 +235,7 @@ class Agent:
         # periodically in the heartbeat loop.
         try:
             from agent.rental_session_handler import list_cached_models
-            _scanned = list_cached_models()
+            _scanned = list_cached_models(image=s.ollama_image)
             if _scanned:
                 self.state.cached_models = _scanned
         except Exception:
@@ -279,6 +279,7 @@ class Agent:
                     # Media (ComfyUI) opt-in: host models dir + image. Empty = disabled.
                     media_models_path=s.comfyui_models_path,
                     comfyui_image=s.comfyui_image,
+                    ollama_image=s.ollama_image,
                 )
                 # Phase 13b: signal READY=1 to systemd so it knows the
                 # agent is fully live (enrolled + loops about to start).
@@ -533,7 +534,7 @@ class Agent:
                 # cadence so pre-pulled / GC'd models stay accurate for routing.
                 try:
                     from agent.rental_session_handler import list_cached_models
-                    _scanned = list_cached_models()
+                    _scanned = list_cached_models(image=s.ollama_image)
                     if _scanned:
                         self.state.cached_models = _scanned
                 except Exception:

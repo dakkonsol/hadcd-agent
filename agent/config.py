@@ -95,6 +95,11 @@ class AgentSettings(BaseSettings):
     # do not operate their own dispatcher.
     container_require_hardened: bool = False
 
+    # Immutable image used for API endpoint sessions and cached-model scans.
+    ollama_image: str = (
+        "ollama/ollama@sha256:6345fbc18bd73a1e16404be681dbc6fd291a027cab43ed541abe78c4c81051b0"
+    )
+
     # --- Loop cadences (real seconds; the backend's thresholds use the
     # same scale, so do not compress here) ---------------------------
     heartbeat_interval_sec: float = 10.0
