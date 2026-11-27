@@ -12,6 +12,11 @@ user, then allow exactly this command via sudoers:
 Usage:
     hadcd-gpu-fan [--gpu N] set PCT    # 0..100, fixed speed on every fan of GPU N
     hadcd-gpu-fan [--gpu N] auto       # hand fans back to the driver curve
+    hadcd-gpu-fan [--gpu N] get        # print the current target speed (0..100)
+
+``get`` reads NVML's *target* fan speed (what the driver or the last
+``set`` asked for). Some cards report 0 for the measured speed in
+nvidia-smi even while their fans spin, so the agent uses this instead.
 
 Requires nvidia-ml-py (pynvml) for the system python3 and NVIDIA driver 520+.
 Arguments are validated strictly; nothing else is accepted.
@@ -21,7 +26,7 @@ import sys
 
 
 def _usage() -> int:
-    print("usage: hadcd-gpu-fan [--gpu N] set PCT | auto", file=sys.stderr)
+    print("usage: hadcd-gpu-fan [--gpu N] set PCT | auto | get", file=sys.stderr)
     return 2
 
 
@@ -34,6 +39,8 @@ def main(argv: list[str]) -> int:
         argv = argv[2:]
     if argv == ["auto"]:
         action, pct = "auto", None
+    elif argv == ["get"]:
+        action, pct = "get", None
     elif len(argv) == 2 and argv[0] == "set" and argv[1].isdigit() and int(argv[1]) <= 100:
         action, pct = "set", int(argv[1])
     else:
@@ -48,7 +55,15 @@ def main(argv: list[str]) -> int:
     try:
         pynvml.nvmlInit()
         handle = pynvml.nvmlDeviceGetHandleByIndex(gpu)
-        for fan in range(pynvml.nvmlDeviceGetNumFans(handle)):
+        fans = range(pynvml.nvmlDeviceGetNumFans(handle))
+        if action == "get":
+            targets = [pynvml.nvmlDeviceGetTargetFanSpeed(handle, f) for f in fans]
+            if not targets:
+                print("hadcd-gpu-fan: GPU reports no fans", file=sys.stderr)
+                return 1
+            print(round(sum(targets) / len(targets)))
+            return 0
+        for fan in fans:
             if action == "set":
                 pynvml.nvmlDeviceSetFanSpeed_v2(handle, fan, pct)
             else:

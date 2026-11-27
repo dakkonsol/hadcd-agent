@@ -21,6 +21,14 @@ it reaches 1.0. It is pre-1.0 today: expect breaking changes on `main`.
   helper (`scripts/hadcd-gpu-fan`) via `sudo -n`, so the agent stays
   unprivileged. Setup: `docs/gpu-fan-control.md`.
 
+### Fixed (fan control)
+- Fan control now starts its ramp from the NVML **target** fan speed
+  (new read-only `hadcd-gpu-fan get`), not `nvidia-smi`'s fan reading.
+  Some cards always report 0 % there even while the fans spin, so every
+  hand-over, including resuming after the heat guard, started from 0.
+  If `get` fails, the agent uses the old reading. Reinstall the helper
+  on nodes to pick this up.
+
 ### Security
 - **Container tasks now enforce a node-side security floor.** Bind-mount
   sources must be locally allowlisted (`CONTAINER_MOUNT_ALLOWLIST`; the

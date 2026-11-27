@@ -90,6 +90,9 @@ def select_tier(
 class FanBackend(Protocol):
     def set_speed(self, pct: int) -> bool: ...
     def restore_auto(self) -> bool: ...
+    def get_speed(self) -> int | None:
+        """Current *target* fan speed (0..100), or None if unknown."""
+        ...
 
 
 def read_gpu(gpu_index: int, timeout: float = 5.0) -> GpuReading | None:
@@ -137,7 +140,8 @@ class HelperBackend:
         self._gpu = gpu_index
         self._timeout = timeout
 
-    def _call(self, *args: str) -> bool:
+    def _run(self, *args: str) -> str | None:
+        """Run the helper; return its stdout on success, None on failure."""
         cmd = ["sudo", "-n", self._helper, "--gpu", str(self._gpu), *args]
         try:
             out = subprocess.run(
@@ -146,20 +150,30 @@ class HelperBackend:
             )
         except (OSError, subprocess.SubprocessError) as exc:
             logger.warning("fan: helper call failed: %s", exc)
-            return False
+            return None
         if out.returncode != 0:
             logger.warning(
                 "fan: helper exited %d: %s",
                 out.returncode, (out.stderr or out.stdout).strip(),
             )
-            return False
-        return True
+            return None
+        return out.stdout
 
     def set_speed(self, pct: int) -> bool:
-        return self._call("set", str(int(pct)))
+        return self._run("set", str(int(pct))) is not None
 
     def restore_auto(self) -> bool:
-        return self._call("auto")
+        return self._run("auto") is not None
+
+    def get_speed(self) -> int | None:
+        out = self._run("get")
+        if out is None:
+            return None
+        try:
+            return _clamp_pct(int(out.strip()))
+        except ValueError:
+            logger.warning("fan: helper 'get' printed %r", out.strip())
+            return None
 
 
 class NvmlBackend:
@@ -190,6 +204,17 @@ class NvmlBackend:
         except self._nvml.NVMLError as exc:
             logger.warning("fan: NVML restore failed: %s", exc)
             return False
+
+    def get_speed(self) -> int | None:
+        try:
+            targets = [
+                self._nvml.nvmlDeviceGetTargetFanSpeed(self._handle, fan)
+                for fan in range(self._fans)
+            ]
+        except self._nvml.NVMLError as exc:
+            logger.warning("fan: NVML target read failed: %s", exc)
+            return None
+        return _clamp_pct(round(sum(targets) / len(targets))) if targets else None
 
 
 # --- controller ----------------------------------------------------------
@@ -276,9 +301,9 @@ class FanController:
 
         target = self._levels[tier]
         if self._auto:
-            # Take over from the driver curve, starting from the actual
-            # fan speed so the transition is a ramp, not a jump.
-            start = reading.fan_pct if reading.fan_pct is not None else target
+            # Take over from the driver curve, starting from where the
+            # driver has the fans so the transition is a ramp, not a jump.
+            start = self._start_speed(reading, target)
             self._auto = False
             self._current = float(start)
             self._applied = None
@@ -317,6 +342,27 @@ class FanController:
         self._auto = True
 
     # --- internals ---
+
+    def _start_speed(self, reading: GpuReading, target: int) -> float:
+        """Where the driver currently has the fans.
+
+        Prefer the backend's NVML *target* speed: some cards (seen on an
+        RTX 3090) report 0 % in nvidia-smi's fan.speed even while the
+        fans spin, which would make every hand-over start from 0. Fall
+        back to the nvidia-smi reading, then to the tier target.
+        """
+        get_speed = getattr(self._backend, "get_speed", None)
+        if get_speed is not None:
+            try:
+                commanded = get_speed()
+            except Exception:  # never let a read failure stop control
+                logger.debug("fan: get_speed raised", exc_info=True)
+                commanded = None
+            if commanded is not None:
+                return float(commanded)
+        if reading.fan_pct is not None:
+            return float(reading.fan_pct)
+        return float(target)
 
     def _hand_back(self, reason: str) -> None:
         if self._auto:

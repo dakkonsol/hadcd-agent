@@ -22,9 +22,13 @@ LEVELS = {FanTier.IDLE: 30, FanTier.FILL: 40, FanTier.RENTAL: 50}
 
 
 class FakeBackend:
-    def __init__(self, fail_set: bool = False) -> None:
+    def __init__(self, fail_set: bool = False, target: int | None = None) -> None:
         self.calls: list[tuple[str, int | None]] = []
         self.fail_set = fail_set
+        self.target = target  # what get_speed() reports; None = unknown
+
+    def get_speed(self) -> int | None:
+        return self.target
 
     def set_speed(self, pct: int) -> bool:
         self.calls.append(("set", pct))
@@ -170,6 +174,49 @@ def test_missing_fan_reading_starts_at_target():
     assert backend.sets == [40]
 
 
+def test_takes_control_from_nvml_target_not_nvidia_smi_reading():
+    # RTX 3090 seen reporting fan.speed 0 % while its fans spin: the
+    # backend's NVML target is the trustworthy starting point.
+    backend, clock = FakeBackend(target=70), Clock()
+    fan = _controller(backend, clock, ramp_sec=20.0)
+    fan.tick(FanTier.IDLE, _reading(temp=70.0, fan=0.0), host_session_active=False)
+    assert backend.sets == [70]          # eases down from 70, no drop to 0
+    clock.t = 10.0
+    fan.tick(FanTier.IDLE, _reading(fan=0.0), host_session_active=False)
+    assert backend.sets[-1] == 50        # half way from 70 to 30
+
+
+def test_get_speed_error_falls_back_to_reading():
+    class Raising(FakeBackend):
+        def get_speed(self):
+            raise RuntimeError("boom")
+
+    backend, clock = Raising(), Clock()
+    fan = _controller(backend, clock)
+    fan.tick(FanTier.RENTAL, _reading(fan=25.0), host_session_active=False)
+    assert backend.sets == [25]
+    assert fan.mode == "fixed"
+
+
+def test_backend_without_get_speed_still_works():
+    class Minimal:
+        def __init__(self):
+            self.sets = []
+
+        def set_speed(self, pct):
+            self.sets.append(pct)
+            return True
+
+        def restore_auto(self):
+            return True
+
+    backend, clock = Minimal(), Clock()
+    _controller(backend, clock).tick(
+        FanTier.FILL, _reading(fan=22.0), host_session_active=False,
+    )
+    assert backend.sets == [22]
+
+
 def test_heat_guard_hands_back_with_hysteresis():
     backend, clock = FakeBackend(), Clock()
     fan = _controller(backend, clock)
@@ -248,6 +295,22 @@ def test_helper_backend_command_line(monkeypatch):
     assert seen["cmd"][-1] == "auto"
 
 
+@pytest.mark.parametrize(
+    "rc, stdout, expected",
+    [(0, "40\n", 40), (0, "130\n", 100), (0, "garbage\n", None), (3, "", None)],
+)
+def test_helper_backend_get_speed(monkeypatch, rc, stdout, expected):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, rc, stdout, "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert HelperBackend("/usr/local/sbin/hadcd-gpu-fan", 0).get_speed() == expected
+    assert seen["cmd"][-1] == "get"
+
+
 def test_helper_backend_reports_failure(monkeypatch):
     monkeypatch.setattr(
         subprocess, "run",
@@ -296,7 +359,7 @@ _HELPER = Path(__file__).resolve().parents[2] / "scripts" / "hadcd-gpu-fan"
 @pytest.mark.parametrize(
     "args",
     [[], ["set"], ["set", "101"], ["set", "-1"], ["set", "4O"], ["--gpu", "x", "auto"],
-     ["--gpu", "99", "auto"], ["auto", "extra"], ["rm", "-rf"]],
+     ["--gpu", "99", "auto"], ["auto", "extra"], ["get", "extra"], ["rm", "-rf"]],
 )
 def test_helper_script_rejects_bad_args(args):
     out = subprocess.run(
