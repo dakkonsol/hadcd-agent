@@ -50,8 +50,12 @@ nvidia-smi --query-gpu=fan.speed --format=csv
 sudo -u hadcd-agent sudo -n /usr/local/sbin/hadcd-gpu-fan auto
 ```
 
-The helper accepts only `[--gpu N] set 0..100` or `[--gpu N] auto` and rejects
-everything else. It must stay root-owned and not writable by `hadcd-agent`;
+The helper accepts only `[--gpu N] set 0..100`, `[--gpu N] auto` or
+`[--gpu N] get` and rejects everything else. `get` prints the NVML *target*
+fan speed. When the agent takes the fans over from the driver, it starts its ramp
+from that target, because some cards (seen on an RTX 3090) always report
+`0 %` in `nvidia-smi`'s fan reading even while the fans spin. Updating the
+helper needs no sudoers change. It must stay root-owned and not writable by `hadcd-agent`;
 otherwise the sudoers rule becomes a privilege escalation.
 
 Then, in `/etc/hadcd-agent/agent.env` (back the file up first):
