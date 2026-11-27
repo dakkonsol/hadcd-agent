@@ -11,6 +11,16 @@ it reaches 1.0. It is pre-1.0 today: expect breaking changes on `main`.
 
 ## [Unreleased]
 
+### Added
+- **Steady GPU fan tiers** (`agent/fan_control.py`, off by default via
+  `FAN_CONTROL_ENABLED`). The agent sets a fixed GPU fan level per
+  workload tier (idle / fill / rental) and ramps gradually between them,
+  instead of the card's bursty 0 dB curve. Fans go back to the driver
+  curve at a heat guard (`FAN_GUARD_TEMP_C`), during a host Sunshine
+  session, and on agent stop. Fan speed is set through a root-owned
+  helper (`scripts/hadcd-gpu-fan`) via `sudo -n`, so the agent stays
+  unprivileged. Setup: `docs/gpu-fan-control.md`.
+
 ### Security
 - **Container tasks now enforce a node-side security floor.** Bind-mount
   sources must be locally allowlisted (`CONTAINER_MOUNT_ALLOWLIST`; the

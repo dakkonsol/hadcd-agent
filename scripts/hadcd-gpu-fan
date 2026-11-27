@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""hadcd-gpu-fan — minimal root helper that sets or restores GPU fan speed.
+
+The HADCD agent runs unprivileged; setting GPU fan speed through NVML
+needs root. Install this file root-owned and non-writable by the agent
+user, then allow exactly this command via sudoers:
+
+    install -o root -g root -m 0755 scripts/hadcd-gpu-fan /usr/local/sbin/hadcd-gpu-fan
+    echo 'hadcd-agent ALL=(root) NOPASSWD: /usr/local/sbin/hadcd-gpu-fan *' \
+        > /etc/sudoers.d/hadcd-gpu-fan && chmod 0440 /etc/sudoers.d/hadcd-gpu-fan
+
+Usage:
+    hadcd-gpu-fan [--gpu N] set PCT    # 0..100, fixed speed on every fan of GPU N
+    hadcd-gpu-fan [--gpu N] auto       # hand fans back to the driver curve
+
+Requires nvidia-ml-py (pynvml) for the system python3 and NVIDIA driver 520+.
+Arguments are validated strictly; nothing else is accepted.
+"""
+
+import sys
+
+
+def _usage() -> int:
+    print("usage: hadcd-gpu-fan [--gpu N] set PCT | auto", file=sys.stderr)
+    return 2
+
+
+def main(argv: list[str]) -> int:
+    gpu = 0
+    if len(argv) >= 2 and argv[0] == "--gpu":
+        if not argv[1].isdigit() or int(argv[1]) > 15:
+            return _usage()
+        gpu = int(argv[1])
+        argv = argv[2:]
+    if argv == ["auto"]:
+        action, pct = "auto", None
+    elif len(argv) == 2 and argv[0] == "set" and argv[1].isdigit() and int(argv[1]) <= 100:
+        action, pct = "set", int(argv[1])
+    else:
+        return _usage()
+
+    try:
+        import pynvml
+    except ImportError:
+        print("hadcd-gpu-fan: pynvml (nvidia-ml-py) not installed", file=sys.stderr)
+        return 3
+
+    try:
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(gpu)
+        for fan in range(pynvml.nvmlDeviceGetNumFans(handle)):
+            if action == "set":
+                pynvml.nvmlDeviceSetFanSpeed_v2(handle, fan, pct)
+            else:
+                pynvml.nvmlDeviceSetDefaultFanSpeed_v2(handle, fan)
+    except pynvml.NVMLError as exc:
+        print(f"hadcd-gpu-fan: NVML error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        try:
+            pynvml.nvmlShutdown()
+        except Exception:
+            pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

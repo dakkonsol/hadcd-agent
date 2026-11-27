@@ -188,6 +188,11 @@ class RentalSessionHandler:
         # prevents overlapping heartbeat polls from reporting the same loss.
         self._reconciling: set[str] = set()
 
+    @property
+    def active_count(self) -> int:
+        """Number of rental session containers this agent is running."""
+        return len(self._active)
+
     # ── Public interface — called from heartbeat loop ─────────────────────────
 
     async def handle_sessions(self, sessions: list[dict]) -> None:

@@ -37,6 +37,7 @@ from agent.autonomous_mode import AutonomousMiner
 from agent.blob_client import BlobClient, BlobClientError, safe_blob_name
 from agent.config import AgentSettings
 from agent.executor import AgentExecutor
+from agent.fan_control import FanController, build_fan_controller, read_gpu, select_tier
 from agent.heat_source import HeatSource, build_source
 from agent.image_cache import build_image_cache
 from agent.kasa_power_meter import KasaPowerMeter, build_kasa_meter
@@ -209,6 +210,8 @@ class Agent:
             ha_token=s.ha_token,
             ha_heater_entity_id=s.ha_heater_entity_id,
         )
+        # Steady GPU fan tiers — None unless FAN_CONTROL_ENABLED=true.
+        fan_controller = build_fan_controller(s)
         self._log_session_advisory(s)
         ts_status = check_tailscale_status()
         log_tailscale_advisory(ts_status)
@@ -256,6 +259,9 @@ class Agent:
         # kW (room temp still reported for the Building view) and the
         # autonomous fallback never heats the empty room.
         self._heat_override_active: bool = False
+        # Latest interactive-session state, written by the heartbeat
+        # loop; the fan loop hands fans back to the driver while True.
+        self._session_active: bool = False
         try:
             async with httpx.AsyncClient(
                 base_url=s.hadcd_api, timeout=30.0
@@ -343,9 +349,20 @@ class Agent:
                 if self._storage_path:
                     loops.append(self._transfer_loop(client, stop))
                     loops.append(self._storage_gc_loop(client, stop))
+                if fan_controller is not None:
+                    loops.append(
+                        self._fan_loop(fan_controller, vast_provider, autonomous_miner, stop)
+                    )
                 await asyncio.gather(*loops)
                 await self._drain_in_flight()
         finally:
+            # Hand GPU fans back to the driver curve before anything else
+            # so a stopped agent never leaves them pinned at a fixed speed.
+            if fan_controller is not None:
+                try:
+                    await asyncio.to_thread(fan_controller.close)
+                except Exception:
+                    logger.exception("fan: restore on shutdown failed")
             # Stop any running autonomous mining chunk before tearing down
             # the heat source so the miner doesn't outlive its BMS reader.
             await autonomous_miner.stop()
@@ -417,6 +434,7 @@ class Agent:
             # an up-to-date session_active. is_active() is fail-quiet —
             # it never raises — so this can't break the heartbeat.
             session_active = await session_source.is_active()
+            self._session_active = session_active
             # Phase 12a: include the Vast.AI provider state so the
             # operator dashboard can show a live listing badge.
             vast_state = vast_provider.state.value if vast_provider.enabled else None
@@ -939,6 +957,57 @@ class Agent:
                     "device may be unreachable",
                     timeout,
                 )
+            await _sleep_or_stop(stop, interval)
+
+    # --- Steady GPU fan tiers ---------------------------------------
+
+    def _current_fan_tier_inputs(
+        self,
+        vast_provider: "VastProvider",
+        autonomous_miner: "AutonomousMiner",
+    ) -> dict:
+        rental = getattr(self, "_rental_sessions", None)
+        vast_state = vast_provider.state if vast_provider.enabled else None
+        return {
+            "rental_sessions": rental.active_count if rental is not None else 0,
+            "vast_unlisting": vast_state == VastProviderState.UNLISTING,
+            "vast_listed": vast_state == VastProviderState.LISTED,
+            "fill_running": bool(self._run_tasks) or autonomous_miner.active,
+        }
+
+    async def _fan_loop(
+        self,
+        fan: FanController,
+        vast_provider: "VastProvider",
+        autonomous_miner: "AutonomousMiner",
+        stop: asyncio.Event,
+    ) -> None:
+        """Set GPU fans to a fixed level per workload tier, ramping between levels.
+
+        Runs only when FAN_CONTROL_ENABLED=true. Reads the GPU with
+        nvidia-smi in a thread so a slow driver call never blocks the
+        event loop.
+        """
+        s = self.settings
+        interval = s.fan_poll_interval_sec
+        last_tier = None
+        while not stop.is_set():
+            try:
+                reading = await asyncio.to_thread(read_gpu, s.fan_gpu_index)
+                tier = select_tier(
+                    **self._current_fan_tier_inputs(vast_provider, autonomous_miner),
+                    gpu_util_pct=reading.util_pct if reading else None,
+                    rental_util_pct=s.fan_rental_util_pct,
+                )
+                if tier != last_tier:
+                    logger.info("fan: tier -> %s", tier.value)
+                    last_tier = tier
+                await asyncio.to_thread(
+                    fan.tick, tier, reading,
+                    host_session_active=self._session_active,
+                )
+            except Exception:
+                logger.exception("fan: loop iteration failed")
             await _sleep_or_stop(stop, interval)
 
     # --- per-assignment runner ---------------------------------------
