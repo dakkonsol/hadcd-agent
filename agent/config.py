@@ -443,3 +443,25 @@ class AgentSettings(BaseSettings):
     # demanded the miners stop.  On reconnect the current chunk is
     # allowed to finish before normal dispatch resumes.
     autonomous_chunk_sec: int = 120
+
+    # --- Steady GPU fan tiers (agent/fan_control.py) ----------------
+    # Feed-forward fan levels per workload tier instead of the card's
+    # bursty 0 dB curve. Off by default. Control is handed back to the
+    # driver curve at the heat guard, during a host session, and on stop.
+    fan_control_enabled: bool = False
+    # "helper": sudo -n FAN_CONTROL_HELPER (agent stays unprivileged).
+    # "nvml"  : in-process NVML; only works if the agent runs as root.
+    fan_control_backend: str = "helper"
+    fan_control_helper: str = "/usr/local/sbin/hadcd-gpu-fan"
+    fan_gpu_index: int = 0
+    fan_idle_pct: int = 30
+    fan_fill_pct: int = 40
+    fan_rental_pct: int = 50
+    # Seconds to ramp between tier levels (no jumps).
+    fan_ramp_sec: float = 30.0
+    fan_poll_interval_sec: float = 5.0
+    # Hand back to the driver curve at this GPU temp; resume below release.
+    fan_guard_temp_c: float = 80.0
+    fan_guard_release_c: float = 72.0
+    # While listed on Vast.AI, GPU utilisation at/above this means a renter.
+    fan_rental_util_pct: float = 50.0
